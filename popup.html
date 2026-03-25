@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="header">
+    <h1>Multi-AI Prompt</h1>
+  </div>
+
+  <div class="input-section">
+    <textarea id="prompt" placeholder="Type your prompt here..." rows="4"></textarea>
+    <button id="send-btn">Send to All</button>
+  </div>
+
+  <div class="grid" id="responses-grid">
+    <div class="card" data-bot="chatgpt">
+      <div class="card-header">
+        <span class="bot-name">ChatGPT</span>
+        <span class="status-badge" data-status="idle">idle</span>
+      </div>
+      <div class="card-body">
+        <pre class="response-text"></pre>
+      </div>
+    </div>
+
+    <div class="card" data-bot="claude">
+      <div class="card-header">
+        <span class="bot-name">Claude</span>
+        <span class="status-badge" data-status="idle">idle</span>
+      </div>
+      <div class="card-body">
+        <pre class="response-text"></pre>
+      </div>
+    </div>
+
+    <div class="card" data-bot="grok">
+      <div class="card-header">
+        <span class="bot-name">Grok</span>
+        <span class="status-badge" data-status="idle">idle</span>
+      </div>
+      <div class="card-body">
+        <pre class="response-text"></pre>
+      </div>
+    </div>
+
+    <div class="card" data-bot="gemini">
+      <div class="card-header">
+        <span class="bot-name">Gemini</span>
+        <span class="status-badge" data-status="idle">idle</span>
+      </div>
+      <div class="card-body">
+        <pre class="response-text"></pre>
+      </div>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
