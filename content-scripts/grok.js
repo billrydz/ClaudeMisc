@@ -7,28 +7,31 @@
   window.__currentBot = 'grok';
 
   const INPUT_SELECTORS = [
+    '.tiptap.ProseMirror[contenteditable="true"]',
+    'div.ProseMirror[contenteditable="true"]',
     'textarea',
+    'div[contenteditable="true"][role="textbox"]',
     'div[contenteditable="true"]',
-    'input[type="text"]',
   ];
 
   const SEND_BUTTON_SELECTORS = [
+    'button[aria-label="Submit"]',
     'button[aria-label="Send"]',
-    'button[aria-label="Send message"]',
+    'button[aria-label*="Send" i]',
     'button[type="submit"]',
-    'button[data-testid="send-button"]',
   ];
 
   const RESPONSE_SELECTORS = [
+    'div[data-role="assistant"]',
     'div[class*="message"][class*="assistant"]',
     'div[class*="response"]',
     'div[class*="markdown"]',
-    'div[data-role="assistant"]',
   ];
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.action === 'submitPrompt') {
-      handleSubmit(msg.prompt).then(() => sendResponse({ ok: true }))
+      handleSubmit(msg.prompt)
+        .then(() => sendResponse({ ok: true }))
         .catch((err) => {
           chrome.runtime.sendMessage({
             type: 'status', bot: 'grok', status: 'error', text: err.message,
@@ -40,10 +43,17 @@
   });
 
   async function handleSubmit(prompt) {
+    if (detectLoginPage()) {
+      throw new Error('Not logged in. Please log in to Grok first.');
+    }
+
     const existingResponses = countResponses();
 
-    // Find and fill input
-    const input = await waitForElement(INPUT_SELECTORS);
+    const input = await withTimeout(
+      waitForElement(INPUT_SELECTORS),
+      10000,
+      'Could not find Grok input field. The UI may have changed.'
+    );
 
     if (input.tagName === 'TEXTAREA' || input.tagName === 'INPUT') {
       setNativeValue(input, prompt);
@@ -53,11 +63,10 @@
 
     await sleep(300);
 
-    // Find and click send
     const sendBtn = findNearbyButton(input, SEND_BUTTON_SELECTORS);
     if (!sendBtn) {
       input.dispatchEvent(new KeyboardEvent('keydown', {
-        key: 'Enter', code: 'Enter', bubbles: true,
+        key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true,
       }));
     } else {
       sendBtn.click();
@@ -69,10 +78,11 @@
 
     await sleep(2000);
 
-    const responseEl = await waitForNewResponse(existingResponses);
-    if (!responseEl) {
-      throw new Error('No response detected');
-    }
+    const responseEl = await withTimeout(
+      waitForNewResponse(existingResponses),
+      30000,
+      'No response from Grok within 30s'
+    );
 
     const finalText = await waitForResponseSettle(responseEl, 2000, 120000);
 
@@ -94,9 +104,8 @@
       if (responses.length > previousCount) {
         return responses[responses.length - 1];
       }
-      // Also look for any new content being added to the conversation area
       await sleep(500);
     }
-    return null;
+    throw new Error('No response detected');
   }
 })();

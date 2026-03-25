@@ -8,32 +8,46 @@ if (!window.__multiAISharedLoaded) {
 
   /**
    * Wait for an element matching any of the given selectors to appear.
-   * Returns the first match found.
+   * Uses a debounced MutationObserver to avoid thrashing on heavy React sites.
    */
   window.waitForElement = function (selectors, timeout = 10000) {
     const selectorList = Array.isArray(selectors) ? selectors : [selectors];
     return new Promise((resolve, reject) => {
-      // Check immediately
-      for (const sel of selectorList) {
-        const el = document.querySelector(sel);
-        if (el) return resolve(el);
+      function findMatch() {
+        for (const sel of selectorList) {
+          const el = document.querySelector(sel);
+          if (el && isElementVisible(el)) return el;
+        }
+        // Fallback: return first match even if not visibly confirmed
+        for (const sel of selectorList) {
+          const el = document.querySelector(sel);
+          if (el) return el;
+        }
+        return null;
       }
+
+      // Check immediately
+      const immediate = findMatch();
+      if (immediate) return resolve(immediate);
 
       const timer = setTimeout(() => {
         observer.disconnect();
         reject(new Error(`Element not found: ${selectorList.join(', ')}`));
       }, timeout);
 
+      let debounceTimer = null;
       const observer = new MutationObserver(() => {
-        for (const sel of selectorList) {
-          const el = document.querySelector(sel);
+        // Debounce: check at most every 200ms to avoid perf issues on React sites
+        if (debounceTimer) return;
+        debounceTimer = setTimeout(() => {
+          debounceTimer = null;
+          const el = findMatch();
           if (el) {
             clearTimeout(timer);
             observer.disconnect();
             resolve(el);
-            return;
           }
-        }
+        }, 200);
       });
 
       observer.observe(document.body, { childList: true, subtree: true });
@@ -41,9 +55,23 @@ if (!window.__multiAISharedLoaded) {
   };
 
   /**
+   * Check if an element is visible on the page.
+   */
+  window.isElementVisible = function (el) {
+    if (!el) return false;
+    // offsetParent is null for hidden elements (display:none), except for body/fixed
+    if (el.offsetParent === null && el.tagName !== 'BODY' && getComputedStyle(el).position !== 'fixed') {
+      return false;
+    }
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  };
+
+  /**
    * Set value on a native input/textarea, triggering React/Vue change detection.
    */
   window.setNativeValue = function (element, value) {
+    element.focus();
     const proto = element.tagName === 'TEXTAREA'
       ? window.HTMLTextAreaElement.prototype
       : window.HTMLInputElement.prototype;
@@ -58,35 +86,59 @@ if (!window.__multiAISharedLoaded) {
   };
 
   /**
-   * Set content in a contenteditable element (ProseMirror, etc.)
+   * Set content in a contenteditable element (ProseMirror, Tiptap, etc.)
+   * Uses execCommand which properly triggers framework state updates.
    */
   window.setContentEditable = function (element, text) {
     element.focus();
-    // Clear existing content
-    element.innerHTML = '';
-    // Use execCommand for better framework compatibility
-    document.execCommand('insertText', false, text);
-    // Also dispatch input event
-    element.dispatchEvent(new InputEvent('input', { bubbles: true, data: text }));
+
+    // Select all existing content and delete it
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    // Try execCommand insertText — works with ProseMirror/Tiptap
+    const inserted = document.execCommand('insertText', false, text);
+
+    if (!inserted) {
+      // Fallback: set textContent and dispatch synthetic events
+      element.textContent = text;
+
+      // Move cursor to end
+      const newRange = document.createRange();
+      newRange.selectNodeContents(element);
+      newRange.collapse(false);
+      selection.removeAllRanges();
+      selection.addRange(newRange);
+
+      // Dispatch events that frameworks listen to
+      element.dispatchEvent(new InputEvent('beforeinput', {
+        bubbles: true, cancelable: true, inputType: 'insertText', data: text,
+      }));
+      element.dispatchEvent(new InputEvent('input', {
+        bubbles: true, inputType: 'insertText', data: text,
+      }));
+    }
   };
 
   /**
    * Wait for a response to "settle" — no DOM mutations for stableMs.
-   * Watches the given container element.
-   * Returns the final text content.
+   * Uses innerText to avoid capturing hidden UI elements.
    */
   window.waitForResponseSettle = function (container, stableMs = 2000, maxWait = 120000) {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
       let settleTimer = null;
       let lastText = '';
 
       const maxTimer = setTimeout(() => {
         observer.disconnect();
-        resolve(lastText || container.textContent.trim());
+        resolve(lastText || container.innerText?.trim() || container.textContent.trim());
       }, maxWait);
 
       const observer = new MutationObserver(() => {
-        const currentText = container.textContent.trim();
+        const currentText = (container.innerText || container.textContent || '').trim();
         if (currentText !== lastText) {
           lastText = currentText;
           // Report streaming progress
@@ -117,28 +169,53 @@ if (!window.__multiAISharedLoaded) {
       settleTimer = setTimeout(() => {
         clearTimeout(maxTimer);
         observer.disconnect();
-        resolve(container.textContent.trim());
+        resolve(lastText || (container.innerText || container.textContent || '').trim());
       }, stableMs);
     });
   };
 
   /**
-   * Find the closest button to an element (e.g., send button near input)
+   * Find a nearby button using cascading selectors.
+   * Validates that found buttons are visible.
    */
   window.findNearbyButton = function (element, selectors) {
     const selectorList = Array.isArray(selectors) ? selectors : [selectors];
-    // Try each selector
+    // Try each selector, prefer visible buttons
+    for (const sel of selectorList) {
+      const btn = document.querySelector(sel);
+      if (btn && isElementVisible(btn)) return btn;
+    }
+    // Retry without visibility check
     for (const sel of selectorList) {
       const btn = document.querySelector(sel);
       if (btn) return btn;
     }
     // Fallback: look for a button in the same form or parent container
-    const container = element.closest('form') || element.parentElement?.parentElement;
+    let container = element.closest('form');
+    if (!container) {
+      // Walk up a few levels to find a reasonable container
+      container = element.parentElement;
+      for (let i = 0; i < 5 && container && container !== document.body; i++) {
+        const btn = container.querySelector('button[type="submit"], button[aria-label*="Send" i]');
+        if (btn && isElementVisible(btn)) return btn;
+        container = container.parentElement;
+      }
+    }
     if (container) {
       const btn = container.querySelector('button[type="submit"], button:not([disabled])');
       if (btn) return btn;
     }
     return null;
+  };
+
+  /**
+   * Wrap a promise with a timeout.
+   */
+  window.withTimeout = function (promise, ms, msg = 'Operation timed out') {
+    return Promise.race([
+      promise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error(msg)), ms)),
+    ]);
   };
 
   /**
@@ -148,11 +225,28 @@ if (!window.__multiAISharedLoaded) {
     return new Promise((resolve) => setTimeout(resolve, ms));
   };
 
+  /**
+   * Detect if the current page is a login/signup page.
+   */
+  window.detectLoginPage = function () {
+    const url = window.location.href;
+    const loginIndicators = [
+      'login', 'signin', 'sign-in', 'signup', 'sign-up', 'auth',
+      'accounts.google.com', 'auth0',
+    ];
+    if (loginIndicators.some((s) => url.toLowerCase().includes(s))) return true;
+
+    // Check for prominent login forms
+    const loginForms = document.querySelectorAll(
+      'form[action*="login"], form[action*="signin"], input[type="password"]'
+    );
+    return loginForms.length > 0;
+  };
+
   // Respond to ping from background
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.action === 'ping') {
       sendResponse({ ok: true });
-      return true;
     }
   });
 }

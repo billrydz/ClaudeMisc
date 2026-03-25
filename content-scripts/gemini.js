@@ -9,31 +9,32 @@
   const INPUT_SELECTORS = [
     'div.ql-editor[contenteditable="true"]',
     'rich-textarea div[contenteditable="true"]',
-    'div[contenteditable="true"][aria-label*="prompt"]',
+    'div[contenteditable="true"][aria-label*="prompt" i]',
     'div[contenteditable="true"][role="textbox"]',
+    'div[contenteditable="true"][aria-label*="Enter" i]',
     'textarea',
-    'div[contenteditable="true"]',
   ];
 
   const SEND_BUTTON_SELECTORS = [
     'button[aria-label="Send message"]',
     'button[aria-label="Send"]',
-    'button.send-button',
-    'button[data-test-id="send-button"]',
+    'button[aria-label*="Send" i]',
     'button[mattooltip="Send"]',
+    'button.send-button',
   ];
 
   const RESPONSE_SELECTORS = [
     'model-response',
-    'div.model-response-text',
     'message-content.model-response',
-    'div[class*="response-container"]',
+    'div.model-response-text',
     'div[class*="model-response"]',
+    'div[class*="response-container"]',
   ];
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.action === 'submitPrompt') {
-      handleSubmit(msg.prompt).then(() => sendResponse({ ok: true }))
+      handleSubmit(msg.prompt)
+        .then(() => sendResponse({ ok: true }))
         .catch((err) => {
           chrome.runtime.sendMessage({
             type: 'status', bot: 'gemini', status: 'error', text: err.message,
@@ -45,10 +46,17 @@
   });
 
   async function handleSubmit(prompt) {
+    if (detectLoginPage()) {
+      throw new Error('Not logged in. Please log in to Gemini first.');
+    }
+
     const existingResponses = countResponses();
 
-    // Find and fill input
-    const input = await waitForElement(INPUT_SELECTORS);
+    const input = await withTimeout(
+      waitForElement(INPUT_SELECTORS),
+      10000,
+      'Could not find Gemini input field. The UI may have changed.'
+    );
 
     if (input.tagName === 'TEXTAREA' || input.tagName === 'INPUT') {
       setNativeValue(input, prompt);
@@ -58,12 +66,10 @@
 
     await sleep(300);
 
-    // Find and click send
     const sendBtn = findNearbyButton(input, SEND_BUTTON_SELECTORS);
     if (!sendBtn) {
-      // Gemini may use Enter to send
       input.dispatchEvent(new KeyboardEvent('keydown', {
-        key: 'Enter', code: 'Enter', bubbles: true,
+        key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true,
       }));
     } else {
       sendBtn.click();
@@ -75,10 +81,11 @@
 
     await sleep(2000);
 
-    const responseEl = await waitForNewResponse(existingResponses);
-    if (!responseEl) {
-      throw new Error('No response detected');
-    }
+    const responseEl = await withTimeout(
+      waitForNewResponse(existingResponses),
+      30000,
+      'No response from Gemini within 30s'
+    );
 
     const finalText = await waitForResponseSettle(responseEl, 2000, 120000);
 
@@ -102,6 +109,6 @@
       }
       await sleep(500);
     }
-    return null;
+    throw new Error('No response detected');
   }
 })();

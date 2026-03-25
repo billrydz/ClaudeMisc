@@ -9,26 +9,27 @@
   const INPUT_SELECTORS = [
     '#prompt-textarea',
     'div[contenteditable="true"][id="prompt-textarea"]',
-    'textarea[placeholder]',
     'div.ProseMirror[contenteditable="true"]',
+    'textarea[placeholder]',
   ];
 
   const SEND_BUTTON_SELECTORS = [
     'button[data-testid="send-button"]',
     'button[aria-label="Send prompt"]',
     'button[aria-label="Send"]',
-    'form button[type="submit"]',
+    'button[aria-label*="Send" i]',
   ];
 
   const RESPONSE_SELECTORS = [
     'div[data-message-author-role="assistant"]',
-    'div.markdown',
+    'div.markdown.prose',
     'div.agent-turn',
   ];
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.action === 'submitPrompt') {
-      handleSubmit(msg.prompt).then(() => sendResponse({ ok: true }))
+      handleSubmit(msg.prompt)
+        .then(() => sendResponse({ ok: true }))
         .catch((err) => {
           chrome.runtime.sendMessage({
             type: 'status', bot: 'chatgpt', status: 'error', text: err.message,
@@ -40,11 +41,20 @@
   });
 
   async function handleSubmit(prompt) {
+    // Check for login page
+    if (detectLoginPage()) {
+      throw new Error('Not logged in. Please log in to ChatGPT first.');
+    }
+
     // Count existing responses before submitting
     const existingResponses = document.querySelectorAll(RESPONSE_SELECTORS.join(', ')).length;
 
     // Find and fill input
-    const input = await waitForElement(INPUT_SELECTORS);
+    const input = await withTimeout(
+      waitForElement(INPUT_SELECTORS),
+      10000,
+      'Could not find ChatGPT input field. The UI may have changed.'
+    );
 
     if (input.tagName === 'TEXTAREA') {
       setNativeValue(input, prompt);
@@ -58,7 +68,9 @@
     const sendBtn = findNearbyButton(input, SEND_BUTTON_SELECTORS);
     if (!sendBtn) {
       // Try pressing Enter as fallback
-      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true,
+      }));
     } else {
       sendBtn.click();
     }
@@ -70,10 +82,11 @@
     // Wait for new response to appear
     await sleep(2000);
 
-    const responseEl = await waitForNewResponse(existingResponses);
-    if (!responseEl) {
-      throw new Error('No response detected');
-    }
+    const responseEl = await withTimeout(
+      waitForNewResponse(existingResponses),
+      30000,
+      'No response from ChatGPT within 30s'
+    );
 
     const finalText = await waitForResponseSettle(responseEl, 2000, 120000);
 
@@ -93,6 +106,6 @@
       }
       await sleep(500);
     }
-    return null;
+    throw new Error('No response detected');
   }
 })();
